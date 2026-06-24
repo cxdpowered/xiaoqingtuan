@@ -299,11 +299,95 @@ docker compose down                        # 停（保留卷=保留登录态与�
   （容器内用服务名，不是 `127.0.0.1`），且 Token 与 `.env` 一致。
 - **同一 QQ 不能两处登录**：容器化 llbot 与宿主机桌面版二选一。
 
-## 二、推服务器
+## 二、服务器迁移部署（拉 Docker Hub 镜像）
 
-与本地同一份 `docker-compose.yml` + `.env`：拷仓库（含 `wiki/`）到服务器，填 `.env` 与
-`llbot_config/webui_token.txt`，`docker compose build && docker compose up -d`，照上面扫码。
-建议 ≥4GB 内存（启用 embeddings / 将来 Playwright 再加）。
+生产环境推荐使用 `docker-compose.prod.yml`：服务器只拉已经发布的
+`zachiever/xiaoqingtuan:0.1.0`，不在服务器上重新 build。
+
+服务器目录建议：
+
+```text
+xiaoqingtuan/
+├── docker-compose.prod.yml
+├── .env
+├── llbot_config/
+│   └── webui_token.txt
+└── wiki/
+```
+
+初始化目录与 LLBot WebUI 密码：
+
+```bash
+mkdir -p xiaoqingtuan/llbot_config xiaoqingtuan/wiki
+cd xiaoqingtuan
+
+# 只用英文和数字更稳；这是 http://服务器IP:3080 的 WebUI 登录密码。
+echo 'YourPassword2026' > llbot_config/webui_token.txt
+```
+
+生产 `.env` 最小模板：
+
+```dotenv
+ENVIRONMENT=prod
+DRIVER=~fastapi+~httpx+~websockets
+HOST=0.0.0.0
+PORT=8080
+LOG_LEVEL=INFO
+COMMAND_START=["/"]
+COMMAND_SEP=["."]
+NICKNAME=["小青团"]
+
+DEEPSEEK_API_KEY=你的_deepseek_key
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_API_BASE=https://api.deepseek.com
+DEEPSEEK_MAX_TOKENS=1024
+DEEPSEEK_MAX_HISTORY_MESSAGES=12
+
+WXCLAW_ACCOUNTS=[]
+
+# 可选：联网搜索
+# TAVILY_API_KEY=你的_tavily_key
+
+# 可选：OneBot 反向 WebSocket 鉴权。若这里设置，LLBot WebUI 的 Token 也要填同值。
+# ONEBOT_ACCESS_TOKEN=你自己生成的token
+```
+
+启动：
+
+```bash
+# Docker Hub 私有仓库才需要 login；公开仓库可跳过。
+docker login
+
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml logs -f xiaoqingtuan
+```
+
+首次部署后打开 `http://服务器IP:3080`，使用 `llbot_config/webui_token.txt` 里的密码登录，
+在 LLBot WebUI 里配置 OneBot 11 反向 WebSocket：
+
+```text
+URL:            ws://xiaoqingtuan:8080/onebot/v11/ws
+Token:          留空（若 .env 设了 ONEBOT_ACCESS_TOKEN 则填同值）
+messageFormat:  array
+```
+
+配置或密钥变更后重启：
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+# 或只重启 agent
+docker compose -f docker-compose.prod.yml restart xiaoqingtuan
+```
+
+注意：
+
+- `.env` 只在服务器本地保存，用 `env_file: .env` 注入容器，不会进入镜像。
+- `llbot_config/webui_token.txt` 是 LLBot WebUI 密码，不放进 `.env`。
+- `llbot_config/` 会保存 LLBot 配置、二维码、日志等运行数据，不要提交 Git。
+- `qq_volume` 保存 QQ 登录态；换服务器通常重新扫码最稳。
+- `data/` / `xqt_data` 是 SQLite、LanceDB、HF 缓存等派生数据；损坏或迁移时可从 `wiki/` 重建索引。
+- 建议服务器内存 ≥4GB；启用 embeddings 或未来 Playwright 后需要更多内存。
 
 ## 三、本地直跑（不用 Docker，开发用）
 
