@@ -1,0 +1,42 @@
+# Python / build cache. Dependencies are installed inside the image.
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime data. Containers use volumes; indexes can be rebuilt from wiki/.
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Secrets, credentials, login state, and machine-local config.
+.env
+.env.*
+mcp.config*.json
+llbot_config/
+wiki/users/
+.claude/
+
+# Local runtime/tooling and OS/editor noise.
+.local/
+nul
+.DS_Store
+Thumbs.db
+*.log
+*.pid
+
+# Version control and docs not needed at runtime.
+.git/
+.gitignore
+*.md
+!README.md

@@ -1,0 +1,79 @@
+# Production deployment compose.
+#
+# This file pulls the published xiaoqingtuan image from Docker Hub instead of
+# building from local source. Keep .env and llbot_config/webui_token.txt on the
+# target server; do not commit or bake them into the image.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+
+services:
+  pmhq:
+    image: linyuchen/pmhq:latest
+    container_name: xqt-pmhq
+    privileged: true
+    environment:
+      - ENABLE_HEADLESS=true
+    volumes:
+      - qq_volume:/root/.config/QQ
+      - ./llbot_config:/app/llbot/data:rw
+    networks:
+      - xqt_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:13000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  llbot:
+    image: linyuchen/llbot:latest
+    container_name: xqt-llbot
+    environment:
+      - PMHQ_HOST=pmhq
+      - WEBUI_PORT=3080
+    ports:
+      - "${LLBOT_WEBUI_PORT:-3080}:3080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - qq_volume:/root/.config/QQ
+      - ./llbot_config:/app/llbot/data:rw
+    networks:
+      - xqt_net
+    depends_on:
+      - pmhq
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ps | grep '[n]ode'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  xiaoqingtuan:
+    image: zachiever/xiaoqingtuan:0.1.0
+    container_name: xiaoqingtuan
+    env_file: .env
+    environment:
+      XQT_DATA_DIR: /data
+      XQT_WIKI_DIR: /app/wiki
+      HF_HOME: /data/hf_cache
+    volumes:
+      - xqt_data:/data
+      - ./wiki:/app/wiki
+    ports:
+      - "8080:8080"
+    networks:
+      - xqt_net
+    restart: unless-stopped
+
+volumes:
+  xqt_data:
+  qq_volume:
+
+networks:
+  xqt_net:
+    driver: bridge

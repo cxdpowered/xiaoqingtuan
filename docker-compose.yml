@@ -1,0 +1,109 @@
+# 小青团 Docker 部署（架构 §10.3 拓扑，QQ 后端用 LuckyLilliaBot / LLBot）
+#
+# 本期交付【完整容器化】：QQ 后端(pmhq+llbot) + Agent(xiaoqingtuan) 同一 compose 一键拉起。
+#
+# 关键事实（2026-06 复核）：
+#   · pmhq          = 无头 QQ 协议端（端口 13000），扫码登录，登录态持久化到 qq_volume。
+#   · llbot         = LuckyLilliaBot 服务层（WebUI 3080）。它【支持 OneBot v11】——
+#                     可配置为 OneBot v11「反向 WS 客户端」主动连 agent，agent 代码零改动。
+#                     （注意：裸 yogurt-pmhq 只有 Milky；llbot 服务层另有 OB11/Milky/Satori 可选。）
+#   · xiaoqingtuan  = 本仓库 NoneBot + LangGraph Agent，作为 OneBot v11【反向 WS 服务端】，
+#                     监听 ws://xiaoqingtuan:8080/onebot/v11/ws，微信走 WxClaw 出站 HTTP。
+#
+# 连接方向：llbot(OB11 ws-reverse 客户端)  ──>  xiaoqingtuan:8080(OB11 服务端)
+#
+# 用法：
+#   1) docker compose build                                # 构建 agent 镜像（精简版，向量层降级 FTS5）
+#      docker compose build --build-arg INSTALL_EMBEDDINGS=true   # 含 bge-small 向量检索（torch CPU，较大）
+#   2) docker compose run --rm xiaoqingtuan python -m src.memory.reindex   # 从 wiki/ 重建索引
+#   3) docker compose up -d                                # 一键拉起 pmhq + llbot + agent
+#   4) docker compose logs -f pmhq                         # 看日志里的二维码，手机 QQ 扫码登录
+#   5) 打开 WebUI http://localhost:3080（密码见 ./llbot_config/webui_token.txt）：
+#        协议 → OneBot 11 → 新增「反向 WebSocket(ws-reverse)」连接：
+#          URL:   ws://xiaoqingtuan:8080/onebot/v11/ws
+#          Token: 留空（若在 .env 设了 ONEBOT_ACCESS_TOKEN，则两边填同一值）
+#          消息格式(messageFormat): array
+#        保存后 agent 日志会出现 "OneBot V11 | Bot <QQ> connected"。
+#
+# 仅本机冒烟（不需要 QQ 后端）：
+#   docker compose run --rm --no-deps xiaoqingtuan python -m src.channels.cli
+
+services:
+  # ── QQ 协议端（无头 QQ NT） ─────────────────────────────────────────────
+  pmhq:
+    image: linyuchen/pmhq:latest        # 国内拉取慢可换镜像源，如 docker.1ms.run/linyuchen/pmhq:latest
+    container_name: xqt-pmhq
+    privileged: true
+    environment:
+      - ENABLE_HEADLESS=true            # WSL/服务器无显示，用无头；有头更稳但需桌面环境
+      # - AUTO_LOGIN_QQ=10001           # 可选：自动登录指定 QQ（需先扫码登录过一次）
+    volumes:
+      - qq_volume:/root/.config/QQ      # QQ 登录态持久化（扫码一次后免重扫）
+      - ./llbot_config:/app/llbot/data:rw
+    networks:
+      - xqt_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:13000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ── LuckyLilliaBot 服务层（WebUI + OneBot v11 ↔ pmhq） ──────────────────
+  llbot:
+    image: linyuchen/llbot:latest       # 同上，国内可换镜像源
+    container_name: xqt-llbot
+    environment:
+      - PMHQ_HOST=pmhq
+      - WEBUI_PORT=3080
+    ports:
+      # WebUI：扫码登录 + 配置 OneBot v11 反向 WS。默认 3080；若宿主机已有桌面版 LLBot
+      # 占用 3080，可临时改用别的主机端口：LLBOT_WEBUI_PORT=3081 docker compose up -d
+      - "${LLBOT_WEBUI_PORT:-3080}:3080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - qq_volume:/root/.config/QQ
+      - ./llbot_config:/app/llbot/data:rw   # webui_token.txt / config_<QQ>.json 在此
+    networks:
+      - xqt_net
+    depends_on:
+      - pmhq
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ps | grep '[n]ode'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ── 小青团 Agent（NoneBot + LangGraph，OneBot v11 反向 WS 服务端） ───────
+  xiaoqingtuan:
+    build:
+      context: .
+      args:
+        INSTALL_EMBEDDINGS: "false"     # 改 "true" 启用本地 bge-small 向量检索
+    image: xiaoqingtuan:dev
+    container_name: xiaoqingtuan
+    env_file: .env
+    environment:
+      XQT_DATA_DIR: /data               # SQLite / LanceDB / HF 模型缓存
+      XQT_WIKI_DIR: /app/wiki           # 长期记忆唯一权威源（bind mount，主机可编辑、随 git）
+      HF_HOME: /data/hf_cache
+    volumes:
+      - xqt_data:/data                  # 派生数据卷：损坏可 `reindex` 从 wiki/ 重建
+      - ./wiki:/app/wiki                # 权威记忆源：主机 ./wiki 与容器共享
+    ports:
+      - "8080:8080"                     # OneBot v11 反向 WS 服务端口（宿主机桌面版 LLBot 也可连）
+    networks:
+      - xqt_net
+    restart: unless-stopped
+
+volumes:
+  xqt_data:
+  qq_volume:
+
+networks:
+  xqt_net:
+    driver: bridge

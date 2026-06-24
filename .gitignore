@@ -1,0 +1,44 @@
+# Python / uv
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local secrets and machine-specific config
+.env
+.env.*
+!.env.example
+mcp.config*.json
+.claude/
+
+# Local runtimes, generated files, and OS/editor noise
+.local/
+nul
+.DS_Store
+Thumbs.db
+*.log
+*.pid
+
+# Runtime-derived data. Rebuild indexes from wiki/ with:
+#   python -m src.memory.reindex
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Per-user memory is private runtime data. Keep shared wiki docs tracked, but
+# never commit generated personal profiles/preferences under wiki/users/.
+wiki/users/
+
+# LLBot(LuckyLilliaBot) runtime data: QQ login state, local DBs, logs, QR codes,
+# generated per-account config, and webui_token.txt password.
+llbot_config/
