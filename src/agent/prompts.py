@@ -24,12 +24,12 @@ SYSTEM_PRINCIPLES = """原则：
 
 def _render_tools() -> str:
     """从注册表渲染当前可用工具清单（含 MCP / 远程工具）。"""
-    from src.tools.registry import get_registry
+    from src.tools.registry import get_registry, high_risk
 
     lines: list[str] = []
     for tool in get_registry().all():
         # 高风险标记：description 已说明则不重复（兼容内置工具与 MCP 远程工具）。
-        mark = "（高风险，提交前会请用户确认）" if tool.high_risk and "高风险" not in tool.description else ""
+        mark = "（高风险，提交前会请用户确认）" if high_risk(tool) and "高风险" not in tool.description else ""
         lines.append(f"- {tool.name}：{tool.description}{mark}")
     if not lines:
         return ""

@@ -3,7 +3,6 @@
 面向 QQ / 微信聊天场景的个人任务型 LLM Agent 助手：多轮对话、工具调用、长期记忆、
 Hybrid RAG、多用户隔离、人工确认、操作审计、可重建索引。
 
-- 结构说明：`AGENT_ARCHITECTURE.md`
 - 底层 NoneBot2 / OneBot V11 / WxClaw 是接入层（`src/channels/`），与 Agent Core 解耦。
 
 ## 特性
@@ -18,8 +17,34 @@ Hybrid RAG、多用户隔离、人工确认、操作审计、可重建索引。
 - **Docker 全栈**：`pmhq + llbot + xiaoqingtuan` 一键拉起，QQ 后端容器化。
 
 > 已端到端跑通：CLI 对话、记忆检索与 Hybrid 召回、last-write-wins 记忆更新、高风险确认落库、
-> 多用户隔离与跨渠道绑定、Docker 容器内冒烟。图书馆真实预约（Playwright）仅留接口/mock，
-> 完整现状与待办见 `AGENT_ARCHITECTURE.md` §10。
+> 多用户隔离与跨渠道绑定、Docker 容器内冒烟。图书馆真实预约依赖外部 MCP 服务，本仓库侧的
+> wrapper / 表 / 调度 / 验证码流转可用 mock 验证（见下「CCNU 图书馆功能组」）。
+
+---
+
+## 架构概览
+
+```text
+QQ / 微信 / CLI 消息
+  → channels 标准化(InboundMessage)
+  → run.handle_message：写 events 流水 → 身份解析 → 跨轮确认/验证码拦截
+  → LangGraph：prepare 装配上下文 → agent(LLM + function calling) ⇄ tool_executor
+                高风险工具 → confirm_gate 拦截，跨轮等用户『确认』
+  → compose 收尾 → OutboundMessage 回渠道
+  → 回复后：LangMem 抽取候选 → Markdown 写入器 → 重建派生索引
+```
+
+设计原则：
+
+- **统一 function calling**：意图判断与工具选择全交给 LLM，无启发式路由；对话与任务执行是同一工具循环的两个分支（出文本=闲聊，出 `tool_calls`=调工具）。
+- **两个真源域互不混淆**：
+  - 原始流水 `events` / `tool_calls` / `reservations`（SQLite，只追加，记"发生过什么"）；
+  - 长期知识 **Markdown Wiki**（`wiki/*.md`，唯一权威源，记"现在确信什么"）。
+- **派生层从 Wiki 单向派生**：`memories` / FTS5 / LanceDB / `wiki_chunks` 损坏可 `python -m src.memory.reindex` 全量重建。
+- **真实操作前人工确认**：高风险工具被 `confirm_gate` 拦截；记忆更新 last-write-wins，旧值进历史不静默丢弃。
+- **接入层可替换**：换 IM 平台不影响 Agent Core；重而脆弱的能力（如图书馆预约）拆成独立 MCP server。
+
+部署拓扑（Docker，共享网络 `xqt_net`）：`pmhq`（无头 QQ 协议端，扫码登录）→ `llbot`（OneBot V11 + WebUI）── ws-reverse ──> `xiaoqingtuan`（NoneBot + LangGraph Agent，:8080）。微信走出站 HTTP 长轮询，不需开放端口。
 
 ---
 
@@ -34,13 +59,13 @@ Hybrid RAG、多用户隔离、人工确认、操作审计、可重建索引。
 │   ├── identity/           # person / account 身份映射与跨渠道绑定
 │   ├── memory/             # Wiki-first 记忆写入、FTS5、LanceDB、重建索引
 │   ├── plugins/            # NoneBot 插件入口
-│   ├── storage/            # SQLite 事件、工具调用、身份表
-│   └── tools/              # 内置工具与 MCP bridge
+│   ├── storage/            # SQLite 事件、工具调用、身份表、功能组表
+│   └── tools/              # 内置工具、MCP bridge、ccnu_library 复杂功能组
 ├── wiki/                   # 共享长期知识源；wiki/users/ 为运行时个人记忆，默认不入库
 ├── Dockerfile              # xiaoqingtuan Agent 镜像
 ├── docker-compose.yml      # pmhq + llbot + xiaoqingtuan 全栈部署
 ├── .env.example            # 可提交的配置模板
-└── AGENT_ARCHITECTURE.md   # 架构与当前交付状态
+└── LICENSE                 # MIT
 ```
 
 不会提交或打进镜像的本地数据：
@@ -129,7 +154,68 @@ LLM 像调用内置工具一样调用它们——Agent 代码零改动，系统�
 | `high_risk_tools` | **本地**指定哪些远程工具属高风险、必须二次确认。 |
 
 **安全边界**：远程工具高风险等级由**本地白名单**决定（不信任 server 自报），调用前仍走 `confirm_gate`；
-参数由对方 server 校验，结果统一归一化。想把图书馆预约拆成独立 MCP server 见 `AGENT_ARCHITECTURE.md` §7。
+参数由对方 server 校验，结果统一归一化。复杂功能组（有本地状态/定时/验证码）的组织方式见下「CCNU 图书馆功能组」。
+
+### 新增内置 function
+
+内置 function 按领域放在 `src/tools/<domain>.py`。每个模块保持同一种结构：
+
+1. `Args`：Pydantic 入参模型，字段描述会进入 function-calling schema。
+2. `async def xxx(args, ctx)`：工具执行体，只返回可 JSON 序列化的 dict。
+3. `TOOLS = [context_tool(...)]`：生成 LangChain `StructuredTool`，声明工具名、描述、参数模型、高风险标记。
+
+新增工具时，把模块路径加入 `src/tools/registry.py` 的 `_BUILTIN_TOOL_MODULES` 即可；
+`prompts.py` 会从注册表自动渲染工具清单，`llm.bind_tools(...)` 会直接绑定 LangChain 工具对象。
+轻量本地工具放现有领域模块（例如 `system.py` 放 `current_time`），重依赖/外部系统优先拆成 MCP server。
+
+### CCNU 图书馆功能组（复杂 MCP 功能组示例）
+
+华师图书馆座位预约是一个**复杂 MCP 功能组**：有本地状态表、定时预约、签到/暂离提醒、自动取消/退座、
+图形验证码、多用户隔离。它放在子包 `src/tools/ccnu_library/`（复用既有 `_BUILTIN_TOOL_MODULES` 装载约定），
+通过 `mcp_bridge.call_mcp_tool()` 调远程 `mcp-ccnu-lib` 原始工具，并自动把身份层解析出的
+`person_id` 注入为远程 `user_key`——**LLM 不参与决定 `user_key`**。
+
+```text
+client.py      调远程原始工具，注入 user_key=person_id
+models/errors  参数 schema、状态枚举、错误码→中文+重试策略
+repository.py  本组独立表：settings / plans / jobs / watches / challenges / notifications
+challenge.py   图形验证码落盘/回传/跨轮续跑（进入 LLM 前确定性拦截答案）
+service.py     预约落库 + watch + 签到/暂离提醒（手动与定时共用）
+scheduler.py   复用 APScheduler（nonebot-plugin-apscheduler）扫 job/watch/notification，不自建轮询
+tools.py       暴露给 LLM 的 library_* wrapper（导出 TOOLS）
+```
+
+暴露给 LLM 的工具：`library_save_account` / `library_login` / `library_query_availability` /
+`library_list_seats` / `library_current` / `library_reserve` / `library_cancel` /
+`library_start_leave` / `library_return` / `library_end_early` /
+`library_create_booking_plan` / `library_list_booking_plans` /
+`library_pause`·`resume`·`cancel_booking_plan`（预约/取消/暂离/退座/保存账号/建计划等高风险动作仍走 `confirm_gate`）。
+
+**接入**：在 `mcp.config.json` 声明远程服务，用 `"include": []` 只建会话、不向 LLM 暴露原始工具
+（由本地 wrapper 经 `call_mcp_tool` 调用）：
+
+```json
+{ "mcpServers": { "ccnu_library": {
+  "transport": "http", "url": "http://ccnu-library-mcp:8010/mcp", "include": []
+} } }
+```
+
+相关环境变量（均可选，有默认值）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `XQT_LIBRARY_MCP_NAME` | `ccnu_library` | 远程 server 名，须与 `mcp.config.json` 一致。 |
+| `XQT_LIBRARY_USER_KEY_MODE` | `person_id` | `person_id`（多用户隔离）/ `default`（共享单账号）/ `fixed`。 |
+| `XQT_LIBRARY_FIXED_USER_KEY` | `default` | `fixed` 模式下的固定 user_key。 |
+| `XQT_LIBRARY_DEFAULT_SIGNIN_GRACE_MINUTES` | `20` | MCP 未返回签到截止时间时的本地宽限分钟数。 |
+| `XQT_LIBRARY_SCAN_INTERVAL_SECONDS` | `30` | 调度器扫描间隔。 |
+| `XQT_LIBRARY_CHALLENGE_DIR` | `data/challenges` | 验证码图片落盘目录（不长期把 base64 存 SQLite）。 |
+
+对话示例：`保存图书馆账号 2024xxxx 密码 abc123` → 高风险确认 → 若需验证码，机器人发图片，
+你直接回图中字符续跑；`这几天每天 8:00-12:00 都帮我约二楼安静区` → 展示计划 → 回复『确认』启用定时预约。
+
+> ⚠️ 端到端真实预约依赖外部 `mcp-ccnu-lib` 服务就绪；未接入时 wrapper 优雅降级为清晰报错。
+> 短信验证码为预留分支，可能无法完整续跑。不做自动识别验证码、绕过统一认证、虚假签到等行为。
 
 ---
 
@@ -201,7 +287,7 @@ WXCLAW_ACCOUNTS='[{"account_id":"账号ID","token":"登录后的token","base_url
 
 ## 一、Docker 全栈部署（推荐）
 
-三容器在同一 compose 网络 `xqt_net`（拓扑见 `AGENT_ARCHITECTURE.md` §9）。前置：装好 Docker + Compose，填好 `.env`。
+三容器在同一 compose 网络 `xqt_net`（拓扑见上「架构概览」）。前置：装好 Docker + Compose，填好 `.env`。
 
 ```bash
 # 1) 设置 LLBot WebUI 登录密码（仅英文+数字），首次必做：
@@ -402,3 +488,17 @@ uv run python bot.py                     # 启动 NoneBot，监听 :8080
 WebSocket 设为 `ws://127.0.0.1:8080/onebot/v11/ws`（设了 token 就在 `.env` 配 `ONEBOT_ACCESS_TOKEN`）。
 
 运行时控制消息：`关闭插件` / `开启插件`。
+
+---
+
+## 免责声明
+
+- 本项目仅供个人学习、研究与自用，按「现状」(AS IS) 提供，不附带任何明示或默示的担保；作者不对使用本项目造成的任何直接或间接损失负责。
+- 使用者须对自己的行为负责，并自行遵守所在地法律法规、相关平台（QQ / 微信 / DeepSeek / 图书馆等）的用户协议与服务条款。因违规使用导致的账号封禁、数据丢失或纠纷，由使用者自行承担。
+- 图书馆等自动化能力仅用于便利**本人**对**自己账号**的合法操作；**不得**用于代抢、刷座、虚假签到、位置伪造、绕过统一认证或任何损害他人/公共资源的行为。请遵守学校与图书馆的相关规定。
+- 项目通过 MCP 接入的第三方服务、模型与数据均由其各自提供方负责；本项目不对其可用性、准确性或合规性作任何保证。
+- 请妥善保管 `.env`、登录态与各类密钥；切勿将真实凭据提交到代码仓库或镜像。
+
+## 许可证
+
+本项目基于 [MIT License](./LICENSE) 开源，详见仓库根目录 `LICENSE` 文件。

@@ -39,15 +39,26 @@ class InboundMessage:
 
 @dataclass
 class OutboundMessage:
-    """Agent 产出的标准化回复。"""
+    """Agent 产出的标准化回复。
+
+    ``attachments`` 让 Agent 回传图片等富媒体（如图书馆图形验证码）。每个元素形如::
+
+        {"type": "image", "mime": "image/png",
+         "data_url": "data:image/png;base64,...", "name": "ccnu_captcha_xxx.png"}
+
+    渠道适配层负责把它翻译成各平台消息（QQ 用 OneBot 图片段，CLI 落盘打印路径）。
+    不支持富媒体的渠道至少应保留 ``reply_text`` 文本提示。
+    """
 
     reply_text: str
     requires_confirmation: bool = False
     confirmation_id: Optional[str] = None
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "reply_text": self.reply_text,
             "requires_confirmation": self.requires_confirmation,
             "confirmation_id": self.confirmation_id,
+            "attachments": self.attachments,
         }

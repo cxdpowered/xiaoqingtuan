@@ -91,13 +91,17 @@ services:
       XQT_DATA_DIR: /data               # SQLite / LanceDB / HF 模型缓存
       XQT_WIKI_DIR: /app/wiki           # 长期记忆唯一权威源（bind mount，主机可编辑、随 git）
       HF_HOME: /data/hf_cache
+      XQT_MCP_CONFIG: /app/mcp.config.json   # 接入外部 MCP（含 CCNU 图书馆功能组）
+      XQT_LIBRARY_MCP_NAME: ccnu_library     # 须与 mcp.config.json 里的 server 名一致
     volumes:
       - xqt_data:/data                  # 派生数据卷：损坏可 `reindex` 从 wiki/ 重建
       - ./wiki:/app/wiki                # 权威记忆源：主机 ./wiki 与容器共享
+      - ./mcp.config.json:/app/mcp.config.json:ro   # MCP 接入配置（含鉴权时不入镜像，挂载注入）
     ports:
       - "8080:8080"                     # OneBot v11 反向 WS 服务端口（宿主机桌面版 LLBot 也可连）
     networks:
       - xqt_net
+      - mcp_net                         # 连到 CCNU 图书馆 MCP 所在网络，按容器名访问
     restart: unless-stopped
 
 volumes:
@@ -107,3 +111,7 @@ volumes:
 networks:
   xqt_net:
     driver: bridge
+  # CCNU 图书馆 MCP（ccnu-library-mcp 容器）所在的外部网络，由其自身 compose 创建。
+  mcp_net:
+    external: true
+    name: mcp-ccnu-lib_default

@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.tools.registry import Tool, ToolContext
+from src.tools.registry import ToolContext, context_tool
 
 
 class ReservationHistoryArgs(BaseModel):
@@ -34,10 +34,10 @@ async def reservation_history(args: dict[str, Any], ctx: ToolContext) -> dict[st
 
 
 TOOLS = [
-    Tool(
+    context_tool(
         name="reservation_history",
         description="查询本人历史图书馆预约记录及状态。",
-        args_model=ReservationHistoryArgs,
+        args_schema=ReservationHistoryArgs,
         func=reservation_history,
         high_risk=False,
     )

@@ -1,7 +1,7 @@
 """集中管理路径与运行时配置。
 
 所有派生数据（SQLite、LanceDB、HF 缓存）都放在 ``data/`` 下，
-``wiki/`` 是长期知识唯一权威源（见 AGENT_ARCHITECTURE.md 第 7 节）。
+``wiki/`` 是长期知识唯一权威源（见 README「架构概览」）。
 可用环境变量覆盖默认路径，便于容器内挂 volume。
 """
 
@@ -49,10 +49,24 @@ LIBRARY_MCP_SERVER = os.environ.get("XQT_LIBRARY_MCP_SERVER", "library")
 # MCP 客户端：指向声明外部 MCP server 列表的 JSON 配置（可选；见 src/tools/mcp_bridge.py）。
 MCP_CONFIG = os.environ.get("XQT_MCP_CONFIG", "")
 
+# ---- CCNU 图书馆功能组（ccnu_library）---------------------------------------
+# 远程 MCP server 名称（须与 XQT_MCP_CONFIG 里声明的一致）。
+LIBRARY_MCP_NAME = os.environ.get("XQT_LIBRARY_MCP_NAME", "ccnu_library")
+# user_key 模式：person_id（默认，多用户隔离）| default（共享 MCP default 账号）| fixed。
+LIBRARY_USER_KEY_MODE = os.environ.get("XQT_LIBRARY_USER_KEY_MODE", "person_id")
+# fixed 模式下使用的固定 user_key。
+LIBRARY_FIXED_USER_KEY = os.environ.get("XQT_LIBRARY_FIXED_USER_KEY", "default")
+# MCP 未返回签到截止时间时，本地推算用的宽限分钟数。
+LIBRARY_SIGNIN_GRACE_MINUTES = int(os.environ.get("XQT_LIBRARY_DEFAULT_SIGNIN_GRACE_MINUTES", "20"))
+# 验证码图片落盘目录（不长期把 base64 写进 SQLite）。
+LIBRARY_CHALLENGE_DIR = _path_env("XQT_LIBRARY_CHALLENGE_DIR", DATA_DIR / "challenges")
+# 调度器扫描间隔（秒）。
+LIBRARY_SCAN_INTERVAL_SECONDS = int(os.environ.get("XQT_LIBRARY_SCAN_INTERVAL_SECONDS", "30"))
+
 
 def ensure_dirs() -> None:
     """创建运行所需的数据目录（幂等）。"""
-    for d in (DATA_DIR, LANCEDB_DIR, HF_CACHE_DIR, WIKI_DIR):
+    for d in (DATA_DIR, LANCEDB_DIR, HF_CACHE_DIR, WIKI_DIR, LIBRARY_CHALLENGE_DIR):
         d.mkdir(parents=True, exist_ok=True)
     # 让 sentence-transformers / huggingface 使用项目内缓存目录。
     os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))

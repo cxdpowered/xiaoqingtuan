@@ -14,13 +14,14 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # 先装依赖（利用层缓存）。仅装依赖、不装本项目（源码用 PYTHONPATH/cwd 即可）。
+# mcp 客户端始终装入：内置 ccnu_library 功能组依赖它接入外部 MCP 服务。
 # bge-small / torch 较重且可选：构建时 --build-arg INSTALL_EMBEDDINGS=true 才装。
 COPY pyproject.toml uv.lock ./
 ARG INSTALL_EMBEDDINGS=false
 RUN if [ "$INSTALL_EMBEDDINGS" = "true" ]; then \
-        uv sync --frozen --no-dev --no-install-project --extra embeddings; \
+        uv sync --frozen --no-dev --no-install-project --extra mcp --extra embeddings; \
     else \
-        uv sync --frozen --no-dev --no-install-project; \
+        uv sync --frozen --no-dev --no-install-project --extra mcp; \
     fi
 
 # 项目源码与 wiki 初始内容。

@@ -32,8 +32,7 @@ def get_llm_with_tools():
     if _llm_with_tools is None:
         from src.tools.registry import get_registry
 
-        schemas = get_registry().openai_schemas()
-        _llm_with_tools = get_llm().bind_tools(schemas)
+        _llm_with_tools = get_llm().bind_tools(get_registry().bindable())
     return _llm_with_tools
 
 

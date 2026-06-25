@@ -10,6 +10,8 @@ class AgentState(TypedDict, total=False):
     session_id: str
     user_id: str
     person_id: str  # 多用户记忆分区标识（见 src.identity）
+    channel: str  # qq | wechat | cli
+    account_id: str  # 平台原始账号号
     text: str
     event_id: str  # 本轮 user_message 的 event id
 

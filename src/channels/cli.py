@@ -29,6 +29,14 @@ async def _repl(session_id: str, user_id: str, channel: str, account_id: str) ->
     except Exception as exc:  # noqa: BLE001
         print(f"[MCP] 初始化失败（已跳过，不影响内置工具）：{exc}")
 
+    # 图书馆定时调度（复用 APScheduler；CLI 下自建一个 AsyncIOScheduler）。
+    try:
+        from src.tools.ccnu_library import scheduler as lib_scheduler
+
+        lib_scheduler.start()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[调度] 启动失败（已跳过）：{exc}")
+
     print("小青团 CLI 已启动。输入消息开始对话，'exit' / 'quit' 退出。")
     print("（高风险操作会请求确认，回复 '确认' 执行、'取消' 放弃。）\n")
 
@@ -56,10 +64,36 @@ async def _repl(session_id: str, user_id: str, channel: str, account_id: str) ->
                 text=text,
             )
             out = await handle_message(inbound)
+            _save_attachments(out.attachments)
             prefix = "小青团 ⚠ > " if out.requires_confirmation else "小青团 > "
             print(f"{prefix}{out.reply_text}\n")
     finally:
         await shutdown_mcp()
+
+
+def _save_attachments(attachments: list) -> None:
+    """CLI 不能直接显示图片：把附件（如图书馆验证码）落盘并打印路径。"""
+    if not attachments:
+        return
+    import base64
+    from pathlib import Path
+
+    from src import config
+
+    config.ensure_dirs()
+    for att in attachments:
+        if att.get("type") != "image":
+            continue
+        data_url = att.get("data_url") or ""
+        payload = data_url.partition(",")[2] if data_url.startswith("data:") else data_url
+        name = att.get("name") or "attachment.png"
+        try:
+            raw = base64.b64decode(payload)
+        except (ValueError, TypeError):
+            continue
+        path = Path(config.LIBRARY_CHALLENGE_DIR) / name
+        path.write_bytes(raw)
+        print(f"[附件] 已保存图片：{path}")
 
 
 def main() -> None:

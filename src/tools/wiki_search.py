@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.tools.registry import Tool, ToolContext
+from src.tools.registry import ToolContext, context_tool
 
 
 class WikiSearchArgs(BaseModel):
@@ -38,10 +38,10 @@ async def wiki_search(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 TOOLS = [
-    Tool(
+    context_tool(
         name="wiki_search",
         description="查询长期记忆 / 个人 Wiki（偏好、画像、规则、历史记录），返回带来源的片段。",
-        args_model=WikiSearchArgs,
+        args_schema=WikiSearchArgs,
         func=wiki_search,
         high_risk=False,
     )

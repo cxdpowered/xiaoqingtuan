@@ -1,13 +1,13 @@
 """MCP 客户端桥接。
 
-把外部 **MCP server** 暴露的 tools 适配成本项目的 :class:`~src.tools.registry.Tool`，
+把外部 **MCP server** 暴露的 tools 适配成 LangChain ``StructuredTool``，
 注册进 :class:`~src.tools.registry.ToolRegistry` 后，LangGraph 主循环（``agent`` →
 ``tool_executor``）即可像调用内置工具一样调用它们，**Agent 代码零改动**。
 
 设计要点
 --------
 - 远程工具没有 pydantic 模型：直接用 MCP server 给的 ``inputSchema`` 作为
-  ``Tool.raw_schema``（function-calling 参数 schema），参数校验交给 server 端。
+  ``StructuredTool.args_schema``（function-calling 参数 schema），参数校验交给 server 端。
 - 高风险标记由本地配置决定（``high_risk_tools`` 白名单），保证 confirm_gate 仍能拦截
   ——不能信任远程 server 自报风险等级；注册后远程工具仍走 confirm_gate。
 - ``mcp`` 不是核心依赖：本模块全部 **惰性导入**，未安装时给出清晰提示。
@@ -37,7 +37,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from src.tools.registry import Tool, ToolContext, ToolRegistry
+from langchain_core.tools import BaseTool
+
+from src.tools.registry import ToolContext, ToolRegistry, context_tool
 
 
 @dataclass
@@ -67,8 +69,8 @@ class MCPServerConfig:
 
 # ---- 工具适配 ------------------------------------------------------------
 def _make_tool(config: MCPServerConfig, *, remote_name: str, description: str,
-               input_schema: dict[str, Any]) -> Tool:
-    """把一个远程 MCP 工具描述适配成本地 :class:`Tool`。"""
+               input_schema: dict[str, Any]) -> BaseTool:
+    """把一个远程 MCP 工具描述适配成 LangChain 工具。"""
     local_name = f"{config.tool_prefix}{remote_name}"
 
     async def _call(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -77,11 +79,11 @@ def _make_tool(config: MCPServerConfig, *, remote_name: str, description: str,
         result = await session.call_tool(remote_name, args)
         return _normalize_result(result)
 
-    return Tool(
+    return context_tool(
         name=local_name,
         description=description,
         func=_call,
-        raw_schema=input_schema or {"type": "object", "properties": {}},
+        args_schema=input_schema or {"type": "object", "properties": {}},
         high_risk=remote_name in config.high_risk_tools,
         source=f"mcp:{config.name}",
     )
@@ -199,6 +201,26 @@ async def _get_session(config: MCPServerConfig) -> Any:
         return session
 
 
+async def call_mcp_tool(
+    server_name: str, tool_name: str, args: dict[str, Any]
+) -> dict[str, Any]:
+    """对外公共入口：调用某个**已接入** MCP server 的原始工具并归一化结果。
+
+    供复杂功能组（如 ``src.tools.ccnu_library``）的本地 wrapper 使用，避免它们去碰
+    私有的 :func:`_get_session`。要求该 server 此前已通过 :func:`init_mcp_from_config`
+    建立会话（哪怕用 ``include: []`` 不向 LLM 暴露任何工具，会话仍会建立）。
+
+    若 server 尚未接入则抛 ``KeyError``，由调用方决定如何降级提示用户。
+    """
+    session = _sessions.get(server_name)
+    if session is None:
+        raise KeyError(
+            f"MCP server {server_name!r} 未接入。请确认 XQT_MCP_CONFIG 已声明并在启动时初始化。"
+        )
+    result = await session.call_tool(tool_name, args)
+    return _normalize_result(result)
+
+
 async def shutdown_mcp() -> None:
     """关闭所有 MCP 连接（进程退出时调用）。幂等。"""
     global _exit_stack
@@ -210,11 +232,11 @@ async def shutdown_mcp() -> None:
 
 
 # ---- 列举 / 注册 ---------------------------------------------------------
-async def load_mcp_tools(config: MCPServerConfig) -> list[Tool]:
-    """连接一个 MCP server，列出其 tools 并适配为本地 :class:`Tool` 列表。"""
+async def load_mcp_tools(config: MCPServerConfig) -> list[BaseTool]:
+    """连接一个 MCP server，列出其 tools 并适配为 LangChain 工具列表。"""
     session = await _get_session(config)
     listed = await session.list_tools()
-    tools: list[Tool] = []
+    tools: list[BaseTool] = []
     for t in getattr(listed, "tools", listed):
         remote_name = t.name
         if config.include is not None and remote_name not in config.include:

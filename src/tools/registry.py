@@ -1,17 +1,18 @@
-"""工具注册表。
+"""LangChain 工具注册表。
 
-每个工具带:
-- ``name`` / ``description``
-- ``args_model``：pydantic 模型，用于校验参数 + 生成 JSON Schema
-- ``func``：``async def (args, ctx) -> dict`` 执行体
-- ``high_risk``：高风险标记，由 agent 的 confirm_gate 拦截（架构 5.3）
+本地 function 统一用 :class:`langchain_core.tools.StructuredTool` 表达，让
+``bind_tools``、Pydantic 入参校验、OpenAI/DeepSeek schema 转换都交给 LangChain。
+本模块只保留项目需要的薄封装：ToolContext 注入、高风险标记、MCP 动态工具注册。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import import_module
 from typing import Any, Awaitable, Callable, Optional
 
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel
 
 from src.storage.db import Database
@@ -26,70 +27,119 @@ class ToolContext:
     user_id: str
     event_id: Optional[str] = None
     person_id: Optional[str] = None  # 多用户记忆分区标识（见 src.identity）
+    channel: Optional[str] = None  # qq | wechat | cli，供功能组做渠道相关编排/主动通知
+    account_id: Optional[str] = None  # 平台原始账号号（主动通知投递目标）
 
 
-ToolFunc = Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]
+ContextToolFunc = Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]
+
+_CONFIG_CONTEXT_KEY = "tool_context"
+_META_HIGH_RISK = "high_risk"
+_META_SOURCE = "source"
 
 
-@dataclass
-class Tool:
-    name: str
-    description: str
-    func: ToolFunc
-    # 本地工具用 pydantic 模型校验参数 + 出 schema；
-    # 远程（MCP）工具没有 pydantic 模型，改用对方给的原始 JSON Schema（``raw_schema``）。
-    args_model: Optional[type[BaseModel]] = None
-    raw_schema: Optional[dict[str, Any]] = None
-    high_risk: bool = False
-    # 工具来源：``builtin`` 本地内置；``mcp:<server>`` 来自某个 MCP server（便于排查/路由）。
-    source: str = "builtin"
+def context_tool(
+    *,
+    name: str,
+    description: str,
+    args_schema: type[BaseModel] | dict[str, Any],
+    func: ContextToolFunc,
+    high_risk: bool = False,
+    source: str = "builtin",
+) -> StructuredTool:
+    """创建带项目上下文的 LangChain StructuredTool。
 
-    def validate_args(self, raw: dict[str, Any]) -> dict[str, Any]:
-        if self.args_model is not None:
-            return self.args_model.model_validate(raw or {}).model_dump()
-        # 远程工具：本地不强校验，交由 MCP server 端校验。
-        return dict(raw or {})
+    工具业务函数仍接收 ``(args, ctx)``，但模型绑定、参数 schema 和运行时调用都走
+    LangChain 原生工具对象。执行时调用方需把 ``ToolContext`` 放进
+    ``configurable.tool_context``。
+    """
 
-    def parameters_schema(self) -> dict[str, Any]:
-        if self.raw_schema is not None:
-            return self.raw_schema
-        if self.args_model is not None:
-            schema = self.args_model.model_json_schema()
-            schema.pop("title", None)
-            return schema
-        return {"type": "object", "properties": {}}
+    async def _run(config: RunnableConfig, **kwargs: Any) -> dict[str, Any]:
+        ctx = (config or {}).get("configurable", {}).get(_CONFIG_CONTEXT_KEY)
+        if not isinstance(ctx, ToolContext):
+            raise RuntimeError("工具执行缺少 ToolContext。")
+        return await func(dict(kwargs), ctx)
 
-    def openai_schema(self) -> dict[str, Any]:
-        """转成 OpenAI / DeepSeek function-calling 工具格式。"""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters_schema(),
-            },
-        }
+    return StructuredTool.from_function(
+        coroutine=_run,
+        name=name,
+        description=description,
+        args_schema=args_schema,
+        metadata={_META_HIGH_RISK: high_risk, _META_SOURCE: source},
+    )
+
+
+def high_risk(tool: BaseTool) -> bool:
+    return bool((tool.metadata or {}).get(_META_HIGH_RISK, False))
+
+
+def source(tool: BaseTool) -> str:
+    return str((tool.metadata or {}).get(_META_SOURCE, "builtin"))
+
+
+def _validate_args(tool: BaseTool, raw: dict[str, Any]) -> dict[str, Any]:
+    schema = getattr(tool, "args_schema", None)
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        return schema.model_validate(raw or {}).model_dump()
+    # MCP / 远程工具可能只有 JSON Schema dict，本地不重复实现 JSON Schema 校验。
+    return dict(raw or {})
+
+
+def tool_config(ctx: ToolContext) -> RunnableConfig:
+    """把项目上下文装进 LangChain RunnableConfig。"""
+    return {"configurable": {_CONFIG_CONTEXT_KEY: ctx}}
 
 
 class ToolRegistry:
     def __init__(self) -> None:
-        self._tools: dict[str, Tool] = {}
+        self._tools: dict[str, BaseTool] = {}
 
-    def register(self, tool: Tool) -> Tool:
+    def register(self, tool: BaseTool) -> BaseTool:
         self._tools[tool.name] = tool
         return tool
 
-    def get(self, name: str) -> Optional[Tool]:
+    def get(self, name: str) -> Optional[BaseTool]:
         return self._tools.get(name)
 
-    def all(self) -> list[Tool]:
+    def all(self) -> list[BaseTool]:
         return list(self._tools.values())
 
-    def openai_schemas(self) -> list[dict[str, Any]]:
-        return [t.openai_schema() for t in self._tools.values()]
+    def bindable(self) -> list[BaseTool]:
+        """返回可直接传给 ``llm.bind_tools(...)`` 的 LangChain 工具对象。"""
+        return self.all()
+
+    def validate_args(self, name: str, raw: dict[str, Any]) -> dict[str, Any]:
+        tool = self.get(name)
+        if tool is None:
+            return dict(raw or {})
+        return _validate_args(tool, raw)
+
+    async def ainvoke(
+        self, name: str, raw: dict[str, Any], ctx: ToolContext
+    ) -> dict[str, Any]:
+        tool = self.get(name)
+        if tool is None:
+            return {"error": f"未知工具 {name}"}
+        result = await tool.ainvoke(self.validate_args(name, raw), config=tool_config(ctx))
+        if isinstance(result, dict):
+            return result
+        return {"result": result}
 
 
 _registry: Optional[ToolRegistry] = None
+
+
+# 内置 function 按领域拆模块，每个模块暴露 ``TOOLS``。
+# 后续新增本地工具：新建/复用领域模块，并把模块路径加入这里。
+_BUILTIN_TOOL_MODULES: tuple[str, ...] = (
+    "src.tools.system",  # 当前时间等低风险系统信息
+    "src.tools.wiki_search",  # 长期记忆 / Wiki 检索
+    "src.tools.note_write",  # 长期记忆写入
+    "src.tools.web_search",  # 联网搜索
+    "src.tools.library_seat",  # 图书馆座位查询 / 预约（mock provider，本地直连）
+    "src.tools.reservation_history",  # 历史预约查询
+    "src.tools.ccnu_library.tools",  # CCNU 图书馆 MCP 功能组（user_key 注入 + 计划/调度/challenge）
+)
 
 
 def get_registry() -> ToolRegistry:
@@ -101,14 +151,13 @@ def get_registry() -> ToolRegistry:
     return _registry
 
 
-def register(tool: Tool) -> Tool:
+def register(tool: BaseTool) -> BaseTool:
     return get_registry().register(tool)
 
 
 def _load_builtin_tools(reg: ToolRegistry) -> None:
-    # 延迟导入，避免循环依赖。
-    from src.tools import library_seat, note_write, reservation_history, web_search, wiki_search
-
-    for mod in (wiki_search, note_write, web_search, library_seat, reservation_history):
-        for tool in mod.TOOLS:
+    # 延迟导入，避免循环依赖；注册顺序即 prompt 工具清单顺序。
+    for module_path in _BUILTIN_TOOL_MODULES:
+        mod = import_module(module_path)
+        for tool in getattr(mod, "TOOLS", ()):
             reg.register(tool)

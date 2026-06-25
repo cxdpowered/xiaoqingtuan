@@ -162,6 +162,144 @@ CREATE TABLE IF NOT EXISTS bind_codes (
     status TEXT NOT NULL              -- pending | used | expired
 );
 CREATE INDEX IF NOT EXISTS idx_bind_codes_status ON bind_codes(status);
+
+-- ===== CCNU 图书馆功能组（src/tools/ccnu_library，见需求文档 §6）=================
+-- 这些是小青团侧的「长期计划/调度/会话」状态，与通用 tool_calls 流水分开，
+-- 避免把计划状态塞进只追加的工具流水。person_id 分区，user_key 注入给远程 MCP。
+
+CREATE TABLE IF NOT EXISTS library_user_settings (
+    person_id TEXT PRIMARY KEY,
+    user_key TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    default_library TEXT,
+    default_area_filter TEXT,
+    default_location_id TEXT,
+    default_strategy TEXT NOT NULL DEFAULT 'favorite_first',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS library_booking_plans (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    session_id TEXT,
+    channel TEXT,
+    account_id TEXT,
+    title TEXT,
+    date_start TEXT NOT NULL,
+    date_end TEXT NOT NULL,
+    weekdays TEXT,
+    time_slots TEXT NOT NULL,
+    preferred_locations TEXT,
+    fallback_locations TEXT,
+    fallback_time_slots TEXT,
+    strategy TEXT NOT NULL,
+    auto_cancel_if_cannot_signin INTEGER NOT NULL DEFAULT 0,
+    auto_end_if_away_timeout INTEGER NOT NULL DEFAULT 0,
+    require_confirmation_each_booking INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_plans_person ON library_booking_plans(person_id);
+CREATE INDEX IF NOT EXISTS idx_library_plans_status ON library_booking_plans(status);
+
+CREATE TABLE IF NOT EXISTS library_booking_jobs (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT,
+    person_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    target_date TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    location_id TEXT,
+    area_filter TEXT,
+    strategy TEXT NOT NULL,
+    run_after TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error_code TEXT,
+    last_error_message TEXT,
+    mcp_result TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_jobs_status ON library_booking_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_library_jobs_run_after ON library_booking_jobs(run_after);
+
+CREATE TABLE IF NOT EXISTS library_reservation_watches (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    plan_id TEXT,
+    job_id TEXT,
+    session_id TEXT,
+    channel TEXT,
+    account_id TEXT,
+    external_reservation_id TEXT,
+    seat_no TEXT,
+    location_path TEXT,
+    date TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    start_at TEXT,
+    end_at TEXT,
+    sign_in_deadline TEXT,
+    away_deadline TEXT,
+    status TEXT NOT NULL,
+    raw_status TEXT,
+    raw_payload TEXT,
+    auto_cancel_if_cannot_signin INTEGER NOT NULL DEFAULT 0,
+    auto_end_if_away_timeout INTEGER NOT NULL DEFAULT 0,
+    last_checked_at TEXT,
+    next_check_at TEXT,
+    next_reminder_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_watches_status ON library_reservation_watches(status);
+CREATE INDEX IF NOT EXISTS idx_library_watches_next_check ON library_reservation_watches(next_check_at);
+
+CREATE TABLE IF NOT EXISTS library_challenge_sessions (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    challenge_id TEXT NOT NULL,
+    challenge_type TEXT NOT NULL,
+    pending_action TEXT,
+    pending_context TEXT,
+    prompt TEXT,
+    image_path TEXT,
+    image_mime TEXT,
+    image_sha256 TEXT,
+    phone_hint TEXT,
+    status TEXT NOT NULL,
+    expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_challenge_session ON library_challenge_sessions(session_id);
+CREATE INDEX IF NOT EXISTS idx_library_challenge_status ON library_challenge_sessions(status);
+
+CREATE TABLE IF NOT EXISTS library_notifications (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    session_id TEXT,
+    channel TEXT,
+    account_id TEXT,
+    watch_id TEXT,
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_notifications_status ON library_notifications(status);
+CREATE INDEX IF NOT EXISTS idx_library_notifications_due ON library_notifications(due_at);
 """
 
 

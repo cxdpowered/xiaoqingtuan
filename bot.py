@@ -11,6 +11,7 @@ def main() -> None:
     driver.register_adapter(WxClawAdapter)
 
     nonebot.load_plugin("nonebot_plugin_status")
+    nonebot.load_plugin("nonebot_plugin_apscheduler")  # 复用其共享 APScheduler
     nonebot.load_plugins("src/plugins")
 
     @driver.on_startup
@@ -24,6 +25,19 @@ def main() -> None:
                 nonebot.logger.info(f"已接入 MCP 工具：{names}")
         except Exception as exc:  # noqa: BLE001
             nonebot.logger.warning(f"MCP 初始化失败（已跳过，不影响内置工具）：{exc}")
+
+    @driver.on_startup
+    async def _start_library_scheduler() -> None:
+        # CCNU 图书馆功能组：把定时扫描挂到 nonebot 的共享 APScheduler 上（不自建轮询）。
+        try:
+            from nonebot_plugin_apscheduler import scheduler
+
+            from src.tools.ccnu_library import scheduler as lib_scheduler
+
+            lib_scheduler.setup(scheduler)
+            nonebot.logger.info("已启用图书馆定时调度（APScheduler）。")
+        except Exception as exc:  # noqa: BLE001
+            nonebot.logger.warning(f"图书馆调度启动失败（已跳过）：{exc}")
 
     @driver.on_shutdown
     async def _close_mcp() -> None:

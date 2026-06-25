@@ -12,7 +12,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from src import config
-from src.tools.registry import Tool, ToolContext
+from src.tools.registry import ToolContext, context_tool
 
 
 class WebSearchArgs(BaseModel):
@@ -71,10 +71,10 @@ async def web_search(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 TOOLS = [
-    Tool(
+    context_tool(
         name="web_search",
         description="联网搜索网页信息（新闻、开放时间、实时资料等），返回标题/链接/摘要。",
-        args_model=WebSearchArgs,
+        args_schema=WebSearchArgs,
         func=web_search,
         high_risk=False,
     )

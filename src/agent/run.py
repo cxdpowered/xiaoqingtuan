@@ -36,8 +36,7 @@ async def _execute_confirmed(pending, ctx: ToolContext) -> dict[str, Any]:
     if tool is None:
         return {"error": f"未知工具 {pending.tool_name}"}
     try:
-        args = tool.validate_args(pending.arguments)
-        result = await tool.func(args, ctx)
+        result = await reg.ainvoke(pending.tool_name, pending.arguments, ctx)
         status = "success"
     except Exception as exc:  # noqa: BLE001
         result = {"error": str(exc)}
@@ -60,6 +59,9 @@ def _summarize_result(tool_name: str, result: dict[str, Any]) -> str:
         detail = result.get("detail") or ""
         code = result.get("confirmation_code", "")
         return f"已提交预约 ✅ {detail}（确认号 {code}）。"
+    # 功能组 wrapper 普遍返回用户友好的 message/error 字段，优先用它。
+    if result.get("message"):
+        return str(result["message"])
     return f"已完成操作：{json.dumps(result, ensure_ascii=False)}"
 
 
@@ -130,8 +132,19 @@ async def handle_message(inbound: InboundMessage) -> OutboundMessage:
         metadata={"person_id": person_id},
     )
     ctx = ToolContext(db=db, session_id=session_id, user_id=inbound.user_id,
-                      event_id=event_id, person_id=person_id)
+                      event_id=event_id, person_id=person_id,
+                      channel=inbound.channel, account_id=account_id)
     cm = get_manager()
+
+    # 0) 图书馆图形验证码：若本会话有待回答的 challenge，把本条文本当答案确定性续跑，
+    #    不进 LLM（复用 ConfirmationManager 之外的轻量跨轮通道，见 ccnu_library.challenge）。
+    from src.tools.ccnu_library import challenge as library_challenge
+
+    challenge_out = await library_challenge.intercept(ctx, text)
+    if challenge_out is not None:
+        db.add_event(session_id=session_id, role="assistant", content=challenge_out.reply_text,
+                     event_type="assistant_message", metadata={"person_id": person_id})
+        return challenge_out
 
     # 1) 跨轮确认：是否有等待确认的高风险操作
     pending = cm.get(session_id)
@@ -140,6 +153,14 @@ async def handle_message(inbound: InboundMessage) -> OutboundMessage:
         if decision == "affirm":
             cm.clear(session_id)
             result = await _execute_confirmed(pending, ctx)
+            # 确认后执行的高风险动作（如保存账号/预约）也可能触发图书馆图形验证码：
+            # 优先把验证码图片回传给用户。
+            challenge_deliver = library_challenge.deliver_pending(db, session_id)
+            if challenge_deliver is not None:
+                db.add_event(session_id=session_id, role="assistant",
+                             content=challenge_deliver.reply_text,
+                             event_type="assistant_message", metadata={"person_id": person_id})
+                return challenge_deliver
             reply = _summarize_result(pending.tool_name, result)
             db.add_event(session_id=session_id, role="assistant", content=reply,
                          event_type="confirmation_result", metadata={"decision": "affirm", "result": result})
@@ -164,11 +185,21 @@ async def handle_message(inbound: InboundMessage) -> OutboundMessage:
         "session_id": session_id,
         "user_id": inbound.user_id,
         "person_id": person_id,
+        "channel": inbound.channel,
+        "account_id": account_id,
         "text": text,
         "event_id": event_id,
         "history": history,
     }
     result_state = await get_graph().ainvoke(state)
+
+    # 2.5) 图书馆 challenge：若本轮某工具触发了图形验证码，优先把验证码图片回传给用户，
+    #      覆盖 LLM 文本（图片 + 提示，会话推进到 awaiting_answer）。
+    challenge_deliver = library_challenge.deliver_pending(db, session_id)
+    if challenge_deliver is not None:
+        db.add_event(session_id=session_id, role="assistant", content=challenge_deliver.reply_text,
+                     event_type="assistant_message", metadata={"person_id": person_id})
+        return challenge_deliver
 
     # 3) 高风险确认拦截
     if result_state.get("requires_confirmation") and result_state.get("pending_tool"):

@@ -15,7 +15,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from src.storage.db import Database
-from src.tools.registry import Tool, ToolContext
+from src.tools.registry import ToolContext, context_tool
 
 
 # ---- Pydantic 输入/输出模型 ---------------------------------------------
@@ -182,17 +182,17 @@ async def library_reservation_create(args: dict[str, Any], ctx: ToolContext) -> 
 
 
 TOOLS = [
-    Tool(
+    context_tool(
         name="library_seat_query",
         description="查询某天某时段图书馆的空闲座位（返回候选座位列表）。",
-        args_model=SeatQueryArgs,
+        args_schema=SeatQueryArgs,
         func=library_seat_query,
         high_risk=False,
     ),
-    Tool(
+    context_tool(
         name="library_reservation_create",
         description="提交图书馆座位预约（高风险操作，提交前必须经用户二次确认）。",
-        args_model=ReservationCreateArgs,
+        args_schema=ReservationCreateArgs,
         func=library_reservation_create,
         high_risk=True,
     ),

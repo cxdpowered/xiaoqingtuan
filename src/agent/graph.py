@@ -19,7 +19,7 @@ from src.agent.llm import get_llm_with_tools
 from src.agent.prompts import build_system_prompt
 from src.agent.state import AgentState
 from src.storage.db import get_db
-from src.tools.registry import ToolContext, get_registry
+from src.tools.registry import ToolContext, get_registry, high_risk
 
 MAX_ITERATIONS = 4
 
@@ -71,7 +71,7 @@ def route_after_agent(state: AgentState) -> str:
     reg = get_registry()
     for tc in tool_calls:
         tool = reg.get(tc["name"])
-        if tool and tool.high_risk:
+        if tool and high_risk(tool):
             return "confirm_gate"
     return "tool_executor"
 
@@ -83,14 +83,14 @@ def confirm_gate_node(state: AgentState) -> dict[str, Any]:
     high = None
     for tc in (getattr(ai, "tool_calls", None) or []):
         tool = reg.get(tc["name"])
-        if tool and tool.high_risk:
+        if tool and high_risk(tool):
             high = tc
             break
     if high is None:
         return {"requires_confirmation": False}
 
     try:
-        args = reg.get(high["name"]).validate_args(high.get("args", {}))
+        args = reg.validate_args(high["name"], high.get("args", {}))
     except Exception:
         args = high.get("args", {})
     prompt = _confirmation_prompt(high["name"], args)
@@ -122,6 +122,8 @@ async def tool_executor_node(state: AgentState) -> dict[str, Any]:
         user_id=state.get("user_id", ""),
         event_id=state.get("event_id"),
         person_id=state.get("person_id"),
+        channel=state.get("channel"),
+        account_id=state.get("account_id"),
     )
     new_messages = list(state["llm_messages"])
     for tc in (getattr(ai, "tool_calls", None) or []):
@@ -133,8 +135,7 @@ async def tool_executor_node(state: AgentState) -> dict[str, Any]:
             status = "failed"
         else:
             try:
-                args = tool.validate_args(raw_args)
-                result_obj = await tool.func(args, ctx)
+                result_obj = await reg.ainvoke(name, raw_args, ctx)
                 status = "success"
             except Exception as exc:  # noqa: BLE001
                 result_obj = {"error": str(exc)}

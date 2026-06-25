@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from src.tools.registry import Tool, ToolContext
+from src.tools.registry import ToolContext, context_tool
 
 
 class NoteWriteArgs(BaseModel):
@@ -38,10 +38,10 @@ async def note_write(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 TOOLS = [
-    Tool(
+    context_tool(
         name="note_write",
         description="把用户明确表达的偏好、事项或笔记记入长期记忆（Wiki）。",
-        args_model=NoteWriteArgs,
+        args_schema=NoteWriteArgs,
         func=note_write,
         high_risk=False,
     )
