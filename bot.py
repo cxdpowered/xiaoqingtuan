@@ -39,6 +39,18 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             nonebot.logger.warning(f"图书馆调度启动失败（已跳过）：{exc}")
 
+    @driver.on_startup
+    async def _start_qq_offline_alert() -> None:
+        # QQ 掉线邮件告警：带外通道，QQ 掉线超阈值时发邮件（见 src/health/qq_offline_alert.py）。
+        try:
+            from nonebot_plugin_apscheduler import scheduler
+
+            from src.health import qq_offline_alert
+
+            qq_offline_alert.setup(scheduler)
+        except Exception as exc:  # noqa: BLE001
+            nonebot.logger.warning(f"QQ 掉线告警启动失败（已跳过）：{exc}")
+
     @driver.on_shutdown
     async def _close_mcp() -> None:
         from src.tools.mcp_bridge import shutdown_mcp

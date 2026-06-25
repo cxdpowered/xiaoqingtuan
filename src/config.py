@@ -64,6 +64,25 @@ LIBRARY_CHALLENGE_DIR = _path_env("XQT_LIBRARY_CHALLENGE_DIR", DATA_DIR / "chall
 LIBRARY_SCAN_INTERVAL_SECONDS = int(os.environ.get("XQT_LIBRARY_SCAN_INTERVAL_SECONDS", "30"))
 
 
+# ---- QQ 掉线邮件告警（health/qq_offline_alert）------------------------------
+# 带外通道：QQ（OneBot v11）掉线超过阈值时用 SMTP 发邮件提醒。掉线时 QQ 本身发不出
+# 消息，故必须走邮件。仅当配置了发件账号与授权码时才启用。
+ALERT_SMTP_HOST = os.environ.get("XQT_ALERT_SMTP_HOST", "smtp.qq.com")
+ALERT_SMTP_PORT = int(os.environ.get("XQT_ALERT_SMTP_PORT", "465"))
+ALERT_SMTP_USER = os.environ.get("XQT_ALERT_SMTP_USER", "")  # 发件 QQ 邮箱地址
+ALERT_SMTP_PASS = os.environ.get("XQT_ALERT_SMTP_PASS", "")  # QQ 邮箱「授权码」（非登录密码）
+ALERT_MAIL_TO = os.environ.get("XQT_ALERT_MAIL_TO", "") or ALERT_SMTP_USER  # 收件人，默认发回自己
+# 连续掉线多久（秒）后才发告警，避免重启/扫码/网络抖动误报。
+ALERT_OFFLINE_THRESHOLD_SECONDS = int(os.environ.get("XQT_ALERT_OFFLINE_THRESHOLD_SECONDS", "600"))
+# 检查间隔（秒）。
+ALERT_CHECK_INTERVAL_SECONDS = int(os.environ.get("XQT_ALERT_CHECK_INTERVAL_SECONDS", "60"))
+
+
+def alert_enabled() -> bool:
+    """配齐发件账号 + 授权码 + 收件人才启用 QQ 掉线邮件告警。"""
+    return bool(ALERT_SMTP_USER and ALERT_SMTP_PASS and ALERT_MAIL_TO)
+
+
 def ensure_dirs() -> None:
     """创建运行所需的数据目录（幂等）。"""
     for d in (DATA_DIR, LANCEDB_DIR, HF_CACHE_DIR, WIKI_DIR, LIBRARY_CHALLENGE_DIR):
