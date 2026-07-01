@@ -65,6 +65,38 @@ def _summarize_result(tool_name: str, result: dict[str, Any]) -> str:
     return f"已完成操作：{json.dumps(result, ensure_ascii=False)}"
 
 
+def _is_library_login_intent(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if "图书馆" not in t:
+        return False
+    return any(k in t for k in ("登录", "验证码", "发图", "发图片", "发来", "重新发"))
+
+
+async def _handle_library_login_intent(ctx: ToolContext, text: str) -> OutboundMessage:
+    """登录/验证码图片请求走确定性工具链，避免 LLM 在无附件时口头说已发送。"""
+    result = await get_registry().ainvoke("library_login", {}, ctx)
+    ctx.db.add_tool_call(
+        event_id=ctx.event_id or "",
+        tool_name="library_login",
+        arguments={},
+        status="success",
+        result=json.dumps(result, ensure_ascii=False),
+        error=None,
+    )
+
+    from src.tools.ccnu_library import challenge as library_challenge
+
+    challenge_deliver = library_challenge.deliver_pending(ctx.db, ctx.session_id)
+    if challenge_deliver is not None:
+        return challenge_deliver
+
+    if result.get("message"):
+        return OutboundMessage(reply_text=str(result["message"]))
+    if result.get("error"):
+        return OutboundMessage(reply_text=f"图书馆登录失败：{result['error']}")
+    return OutboundMessage(reply_text=_summarize_result("library_login", result))
+
+
 async def _extract_and_store_memory(
     session_id: str, user_text: str, reply: str, event_id: str, person_id: str
 ) -> None:
@@ -146,6 +178,13 @@ async def handle_message(inbound: InboundMessage) -> OutboundMessage:
                      event_type="assistant_message", metadata={"person_id": person_id})
         return challenge_out
 
+    # 0.5) 图书馆登录/验证码图片是严格状态机，不交给 LLM 自由发挥。
+    if _is_library_login_intent(text):
+        out = await _handle_library_login_intent(ctx, text)
+        db.add_event(session_id=session_id, role="assistant", content=out.reply_text,
+                     event_type="assistant_message", metadata={"person_id": person_id})
+        return out
+
     # 1) 跨轮确认：是否有等待确认的高风险操作
     pending = cm.get(session_id)
     if pending:
@@ -179,6 +218,15 @@ async def handle_message(inbound: InboundMessage) -> OutboundMessage:
         reply = pending.prompt + "\n（请回复『确认』或『取消』）"
         return OutboundMessage(reply_text=reply, requires_confirmation=True,
                                confirmation_id=pending.confirmation_id)
+
+    # 1.5) 爽约/暂离保护：若本会话有等待回复的保护提示，把「去/取消」确定性接住，不进 LLM。
+    from src.tools.ccnu_library import protection as library_protection
+
+    protect_out = await library_protection.intercept(ctx, text)
+    if protect_out is not None:
+        db.add_event(session_id=session_id, role="assistant", content=protect_out.reply_text,
+                     event_type="assistant_message", metadata={"person_id": person_id})
+        return protect_out
 
     # 2) 正常流程：跑图
     state: dict[str, Any] = {

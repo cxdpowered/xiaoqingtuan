@@ -40,11 +40,27 @@ def resolve_user_key(ctx: ToolContext) -> str:
     return "default"
 
 
+def _classify_error_message(message: str) -> str:
+    lower = message.lower()
+    if "permission denied" in lower or "errno 13" in lower:
+        return "MCP_PERMISSION_DENIED"
+    return "MCP_UNAVAILABLE"
+
+
 def _coerce_result(raw: dict[str, Any]) -> dict[str, Any]:
     """把 mcp_bridge 归一化后的 dict 进一步统一为 {ok, code, message, ...}。"""
     # 传输层/isError：mcp_bridge 会塞 {"error": ...}。
     if "error" in raw and "ok" not in raw:
-        return {"ok": False, "code": "MCP_UNAVAILABLE", "message": str(raw["error"])}
+        err = raw["error"]
+        if isinstance(err, dict):
+            out = dict(err)
+            out["ok"] = False
+            message = str(out.get("message") or out.get("error") or err)
+            out.setdefault("message", message)
+            out.setdefault("code", _classify_error_message(message))
+            return out
+        message = str(err)
+        return {"ok": False, "code": _classify_error_message(message), "message": message}
     # 远程已返回规范结构。
     out = dict(raw)
     out.setdefault("ok", True)

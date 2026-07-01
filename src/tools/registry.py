@@ -136,10 +136,25 @@ _BUILTIN_TOOL_MODULES: tuple[str, ...] = (
     "src.tools.wiki_search",  # 长期记忆 / Wiki 检索
     "src.tools.note_write",  # 长期记忆写入
     "src.tools.web_search",  # 联网搜索
-    "src.tools.library_seat",  # 图书馆座位查询 / 预约（mock provider，本地直连）
-    "src.tools.reservation_history",  # 历史预约查询
     "src.tools.ccnu_library.tools",  # CCNU 图书馆 MCP 功能组（user_key 注入 + 计划/调度/challenge）
 )
+
+# 仅在 mock provider 下暴露的旧图书馆工具：座位查询 / 预约 / 历史预约。
+# 它们与 ccnu_library 功能组重复，同时挂给 LLM 会造成选错工具（mock 预约实际走不通）。
+# 生产（provider != mock）只保留 ccnu_library 一条链，消除工具歧义。
+_MOCK_LIBRARY_TOOL_MODULES: tuple[str, ...] = (
+    "src.tools.library_seat",  # 图书馆座位查询 / 预约（mock provider，本地直连）
+    "src.tools.reservation_history",  # 历史预约查询（旧）
+)
+
+
+def _active_tool_modules() -> tuple[str, ...]:
+    from src import config
+
+    modules = _BUILTIN_TOOL_MODULES
+    if getattr(config, "LIBRARY_PROVIDER", "mock") == "mock":
+        modules = modules + _MOCK_LIBRARY_TOOL_MODULES
+    return modules
 
 
 def get_registry() -> ToolRegistry:
@@ -157,7 +172,7 @@ def register(tool: BaseTool) -> BaseTool:
 
 def _load_builtin_tools(reg: ToolRegistry) -> None:
     # 延迟导入，避免循环依赖；注册顺序即 prompt 工具清单顺序。
-    for module_path in _BUILTIN_TOOL_MODULES:
+    for module_path in _active_tool_modules():
         mod = import_module(module_path)
         for tool in getattr(mod, "TOOLS", ()):
             reg.register(tool)
