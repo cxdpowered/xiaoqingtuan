@@ -32,10 +32,22 @@ _log = logging.getLogger(__name__)
 _state: dict[str, Any] = {"down_since": None, "alerted": False}
 
 
+# 只认 QQ（OneBot v11）适配器。本项目还挂了 WxClaw（微信）适配器，
+# get_bots() 会把两个适配器的 Bot 都返回；若按「有任意 Bot」判断，微信在线时
+# 就会把 QQ 掉线也算成在线，导致告警永远不触发（本 bug 的根因）。
+_QQ_ADAPTER_NAME = "OneBot V11"
+
+
 def _bot_online() -> bool:
-    """是否有任意 OneBot/QQ Bot 当前连着。"""
+    """是否有 QQ（OneBot v11）Bot 当前连着。只看 QQ，不把微信等其它适配器算进来。"""
     try:
-        return len(nonebot.get_bots()) > 0
+        for bot in nonebot.get_bots().values():
+            try:
+                if bot.adapter.get_name() == _QQ_ADAPTER_NAME:
+                    return True
+            except Exception:  # noqa: BLE001 — 个别 Bot 取适配器失败不影响整体判断
+                continue
+        return False
     except Exception:  # noqa: BLE001 — 框架未就绪时按掉线处理
         return False
 

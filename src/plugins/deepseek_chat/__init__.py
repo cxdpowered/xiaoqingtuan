@@ -4,6 +4,8 @@
 再把标准化回复发回渠道。QQ（OneBot V11）与微信（WxClaw）共用同一套 Agent。
 """
 
+import logging
+
 from nonebot import get_driver, on_message
 from nonebot.adapters import Bot, Event, Message
 from nonebot.params import EventMessage
@@ -22,6 +24,7 @@ CONTROL_WORDS = DISABLE_WORDS | ENABLE_WORDS
 
 driver = get_driver()
 enabled = True
+logger = logging.getLogger(__name__)
 
 
 def _normalize(text: str) -> str:
@@ -80,12 +83,12 @@ async def handle_agent(bot: Bot, event: Event) -> None:
         await agent.finish(f"小青团处理消息时出错：{exc}")
 
     # 富媒体附件（如图书馆图形验证码）：QQ/OneBot 先发图片，再发文字提示。
-    await _send_attachments(bot, out.attachments)
+    await _send_attachments(bot, event, out.attachments)
     reply = out.reply_text or "（没有可回复的内容）"
     await agent.finish(reply)
 
 
-async def _send_attachments(bot: Bot, attachments: list) -> None:
+async def _send_attachments(bot: Bot, event: Event, attachments: list) -> None:
     """把 OutboundMessage.attachments 翻译成 OneBot 图片段发送。失败不阻断文字回复。
 
     OneBot 图片的 ``file`` 接受 ``base64://<payload>``，故把 data URL 里的 base64 取出转换。
@@ -93,8 +96,9 @@ async def _send_attachments(bot: Bot, attachments: list) -> None:
     if not attachments:
         return
     try:
-        from nonebot.adapters.onebot.v11 import MessageSegment
-    except Exception:
+        from nonebot.adapters.onebot.v11 import Message, MessageSegment
+    except Exception as exc:
+        logger.warning("当前 adapter 不支持 OneBot 图片段，跳过附件发送：%s", exc)
         return
     for att in attachments:
         if att.get("type") != "image":
@@ -104,6 +108,6 @@ async def _send_attachments(bot: Bot, attachments: list) -> None:
         if not payload:
             continue
         try:
-            await agent.send(MessageSegment.image(f"base64://{payload}"))
-        except Exception:  # noqa: BLE001
-            pass
+            await bot.send(event, Message([MessageSegment.image(file=f"base64://{payload}")]))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("发送图片附件失败：%s", exc, exc_info=True)

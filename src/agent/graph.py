@@ -21,7 +21,7 @@ from src.agent.state import AgentState
 from src.storage.db import get_db
 from src.tools.registry import ToolContext, get_registry, high_risk
 
-MAX_ITERATIONS = 4
+MAX_ITERATIONS = 6
 
 
 # ---- 节点 ----------------------------------------------------------------
@@ -93,7 +93,7 @@ def confirm_gate_node(state: AgentState) -> dict[str, Any]:
         args = reg.validate_args(high["name"], high.get("args", {}))
     except Exception:
         args = high.get("args", {})
-    prompt = _confirmation_prompt(high["name"], args)
+    prompt = _confirmation_prompt(high["name"], args, state.get("person_id"))
     return {
         "pending_tool": {"name": high["name"], "args": args},
         "requires_confirmation": True,
@@ -101,14 +101,87 @@ def confirm_gate_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-def _confirmation_prompt(tool_name: str, args: dict[str, Any]) -> str:
-    if tool_name == "library_reservation_create":
-        area = args.get("area") or args.get("library") or "图书馆"
-        return (
-            f"即将预约：{args.get('date')} {args.get('start_time')}-{args.get('end_time')}，"
-            f"{area} 座位 {args.get('seat')}。\n是否确认提交？（回复『确认』执行，『取消』放弃）"
-        )
+def _confirmation_prompt(tool_name: str, args: dict[str, Any],
+                         person_id: str | None = None) -> str:
+    if tool_name == "library_reserve":
+        return _reserve_confirmation_prompt(args)
+    if tool_name == "library_create_booking_plan":
+        return _plan_confirmation_prompt(args)
+    if tool_name == "library_cancel_booking_plan":
+        return _cancel_plan_confirmation_prompt(args, person_id)
     return f"即将执行高风险操作 {tool_name}，参数：{json.dumps(args, ensure_ascii=False)}。\n回复『确认』执行，『取消』放弃。"
+
+
+def _cancel_plan_confirmation_prompt(args: dict[str, Any], person_id: str | None) -> str:
+    """取消连续预约的确认话术：把要拆掉的计划说清楚（未开始的座位也会一并撤销）。"""
+    from src.storage.db import get_db
+    from src.tools.ccnu_library import repository as repo
+
+    db = get_db()
+    if args.get("plan_id"):
+        p = repo.get_plan(db, args["plan_id"])
+        plans = [p] if p else []
+    else:
+        plans = [p for p in (repo.list_plans(db, person_id) if person_id else [])
+                 if p["status"] in ("active", "paused")]
+    if not plans:
+        return "没找到进行中的连续预约计划。回复『取消』结束。"
+    if len(plans) > 1 and not args.get("all_plans"):
+        listing = "；".join(
+            f"{(p.get('title') or '计划')} {p['date_start']}~{p['date_end']}" for p in plans)
+        return (f"你有 {len(plans)} 个进行中的计划：{listing}。\n"
+                "确认后我会让你选具体取消哪个。回复『确认』继续，『取消』放弃。")
+    lines = ["即将取消以下连续预约计划，并撤掉其待抢任务与尚未开始的座位预约："]
+    for p in plans:
+        lines.append(f"· {(p.get('title') or '计划')} {p['date_start']}~{p['date_end']}")
+    lines.append("是否确认？（回复『确认』执行，『取消』放弃）")
+    return "\n".join(lines)
+
+
+def _plan_confirmation_prompt(args: dict[str, Any]) -> str:
+    """多天预约计划的确认话术：一次覆盖整段日期，确认后不再逐天打扰。"""
+    span = f"{args.get('date_start')}~{args.get('date_end')}"
+    wds = args.get("weekdays")
+    if not wds:
+        wd_txt = "每天"
+    elif set(wds) == {1, 2, 3, 4, 5}:
+        wd_txt = "工作日"
+    else:
+        names = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "日"}
+        wd_txt = "周" + "、".join(names.get(w, str(w)) for w in wds)
+    slots = args.get("time_slots") or []
+    slot_txt = "、".join(str(s) for s in slots) if slots else "默认时段"
+    pref = args.get("preferred_locations")
+    where = ""
+    if pref:
+        where = f"，区域 {pref[0] if isinstance(pref, list) else pref}"
+    return (f"即将创建预约计划：{span}，{wd_txt}，每天 {slot_txt}{where}。\n"
+            f"生效后每天按放票时间自动抢座，遇下午闭馆自动改约上午、整天闭馆自动跳过。\n"
+            f"是否确认？（回复『确认』执行，『取消』放弃）")
+
+
+def _reserve_confirmation_prompt(args: dict[str, Any]) -> str:
+    """预约确认话术：把缺省的日期/时段补齐后展示，区域优先展示自然语言描述。"""
+    from src.tools.ccnu_library import service
+
+    base = service.default_booking_window()
+    given_all = bool(args.get("date") and args.get("start_time") and args.get("end_time"))
+    date = args.get("date") or base["date"]
+    start = args.get("start_time") or base["start_time"]
+    end = args.get("end_time") or base["end_time"]
+    span = f"{date} {start}-{end}"
+
+    if args.get("seat_id"):
+        where = f"指定座位 {args['seat_id']}"
+    elif args.get("location_query"):
+        where = f"{args['location_query']}（自动选可用座位）"
+    elif args.get("location_id"):
+        where = f"区域 {args['location_id']}（自动选可用座位）"
+    else:
+        where = "你的默认区域"
+    assumed = "" if given_all else "（时间为默认，可改）"
+    return (f"即将预约：{span}{assumed}，{where}。\n"
+            f"是否确认提交？（回复『确认』执行，『取消』放弃）")
 
 
 async def tool_executor_node(state: AgentState) -> dict[str, Any]:

@@ -93,6 +93,7 @@ services:
       HF_HOME: /data/hf_cache
       XQT_MCP_CONFIG: /app/mcp.config.json   # 接入外部 MCP（含 CCNU 图书馆功能组）
       XQT_LIBRARY_MCP_NAME: ccnu_library     # 须与 mcp.config.json 里的 server 名一致
+      XQT_LIBRARY_PROVIDER: mcp              # 走真实 MCP：隐藏旧 mock 座位工具，消除选错工具的歧义
     volumes:
       - xqt_data:/data                  # 派生数据卷：损坏可 `reindex` 从 wiki/ 重建
       - ./wiki:/app/wiki                # 权威记忆源：主机 ./wiki 与容器共享
