@@ -42,7 +42,10 @@ def _extract_challenge(result: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def _save_image(challenge_id: str, image_base64: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """把 data URL / 裸 base64 落盘，返回 (path, mime, sha256)。不长期把 base64 存 SQLite。"""
+    """把 data URL / 裸 base64 落盘，返回 (path, mime, sha256)。不长期把 base64 存 SQLite。
+
+    mime **按 data URL 前缀解析**（修复 4）：验证码图可能是 PNG 或 JPEG，不写死。
+    """
     if not image_base64:
         return None, None, None
     mime = "image/png"
@@ -50,8 +53,9 @@ def _save_image(challenge_id: str, image_base64: str) -> tuple[Optional[str], Op
     if image_base64.startswith("data:"):
         header, _, payload = image_base64.partition(",")
         data = payload
-        if ";" in header and ":" in header:
-            mime = header[header.index(":") + 1 : header.index(";")] or mime
+        # header 形如 "data:image/jpeg;base64" 或 "data:image/png"（无 ;base64）。
+        meta = header[len("data:"):]
+        mime = (meta.split(";", 1)[0] or mime).strip() or mime
     try:
         raw = base64.b64decode(data)
     except (ValueError, TypeError):
@@ -158,6 +162,7 @@ async def intercept(ctx: ToolContext, text: str) -> Optional[OutboundMessage]:
         result = await client.call(
             ctx, "submit_challenge",
             {"challenge_id": ch["challenge_id"], "answer": answer},
+            user_key=ch["user_key"],
         )
         if result.get("ok"):
             repo.set_challenge_status(ctx.db, ch["id"], "resolved")
@@ -172,6 +177,7 @@ async def intercept(ctx: ToolContext, text: str) -> Optional[OutboundMessage]:
     result = await client.call(
         ctx, "submit_challenge",
         {"challenge_id": ch["challenge_id"], "answer": answer},
+        user_key=ch["user_key"],
     )
     if result.get("ok"):
         repo.set_challenge_status(ctx.db, ch["id"], "resolved")
