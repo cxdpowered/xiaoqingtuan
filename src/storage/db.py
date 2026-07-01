@@ -300,6 +300,27 @@ CREATE TABLE IF NOT EXISTS library_notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_library_notifications_status ON library_notifications(status);
 CREATE INDEX IF NOT EXISTS idx_library_notifications_due ON library_notifications(due_at);
+
+CREATE TABLE IF NOT EXISTS library_protection_prompts (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    watch_id TEXT NOT NULL,
+    session_id TEXT,
+    channel TEXT,
+    account_id TEXT,
+    reservation_id TEXT,
+    kind TEXT NOT NULL,          -- signin | away
+    action TEXT NOT NULL,        -- cancel | end_early
+    status TEXT NOT NULL,        -- awaiting | kept | released | executed | expired | failed
+    deadline TEXT NOT NULL,      -- 到点仍无回复就执行保护动作的时刻
+    prompt TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_protect_session ON library_protection_prompts(session_id);
+CREATE INDEX IF NOT EXISTS idx_library_protect_status ON library_protection_prompts(status);
+CREATE INDEX IF NOT EXISTS idx_library_protect_watch ON library_protection_prompts(watch_id);
 """
 
 

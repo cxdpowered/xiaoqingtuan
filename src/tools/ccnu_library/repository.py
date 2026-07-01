@@ -226,10 +226,13 @@ def create_watch(db: Database, *, person_id: str, user_key: str, fields: dict[st
     return wid
 
 
+_TERMINAL_WATCH_STATUSES = "('ended', 'cancelled', 'none', 'violation')"
+
+
 def active_watches(db: Database) -> list[dict[str, Any]]:
     rows = db.query(
         "SELECT * FROM library_reservation_watches"
-        " WHERE status NOT IN ('ended', 'cancelled', 'none')",
+        f" WHERE status NOT IN {_TERMINAL_WATCH_STATUSES}",
     )
     return [dict(r) for r in rows]
 
@@ -237,7 +240,7 @@ def active_watches(db: Database) -> list[dict[str, Any]]:
 def due_watches(db: Database, now: str) -> list[dict[str, Any]]:
     rows = db.query(
         "SELECT * FROM library_reservation_watches"
-        " WHERE status NOT IN ('ended', 'cancelled', 'none')"
+        f" WHERE status NOT IN {_TERMINAL_WATCH_STATUSES}"
         " AND (next_check_at IS NULL OR next_check_at <= ?)",
         (now,),
     )
@@ -291,6 +294,7 @@ def set_notification_status(db: Database, notification_id: str, status: str) -> 
 
 
 def cancel_notifications_for_watch(db: Database, watch_id: str, kinds: Iterable[str]) -> None:
+    kinds = list(kinds)
     placeholders = ",".join("?" for _ in kinds)
     if not placeholders:
         return
@@ -298,4 +302,81 @@ def cancel_notifications_for_watch(db: Database, watch_id: str, kinds: Iterable[
         f"UPDATE library_notifications SET status = 'cancelled', updated_at = ?"
         f" WHERE watch_id = ? AND status = 'pending' AND kind IN ({placeholders})",
         (now_iso(), watch_id, *kinds),
+    )
+
+
+# ---- 计划拆除（取消连续抢座，不漏删）--------------------------------------
+_OPEN_JOB_STATUSES = "('pending', 'running', 'waiting_challenge', 'waiting_confirmation')"
+
+
+def cancel_pending_jobs(db: Database, plan_id: str) -> int:
+    """把某计划下未完成的 job 全部标记 cancelled。返回受影响行数。"""
+    cur = db.execute(
+        f"UPDATE library_booking_jobs SET status = 'cancelled', updated_at = ?"
+        f" WHERE plan_id = ? AND status IN {_OPEN_JOB_STATUSES}",
+        (now_iso(), plan_id),
+    )
+    return cur.rowcount if cur.rowcount is not None else 0
+
+
+def active_watches_for_plan(db: Database, plan_id: str) -> list[dict[str, Any]]:
+    rows = db.query(
+        "SELECT * FROM library_reservation_watches"
+        f" WHERE plan_id = ? AND status NOT IN {_TERMINAL_WATCH_STATUSES}",
+        (plan_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+# ---- 爽约/暂离保护提示（先问后保护）---------------------------------------
+def create_protection_prompt(
+    db: Database, *, person_id: str, user_key: str, watch_id: str, kind: str, action: str,
+    deadline: str, reservation_id: Optional[str] = None, session_id: Optional[str] = None,
+    channel: Optional[str] = None, account_id: Optional[str] = None, prompt: Optional[str] = None,
+) -> str:
+    pid = new_id("lpp_")
+    now = now_iso()
+    db.execute(
+        "INSERT INTO library_protection_prompts (id, person_id, user_key, watch_id, session_id,"
+        " channel, account_id, reservation_id, kind, action, status, deadline, prompt,"
+        " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting', ?, ?, ?, ?)",
+        (pid, person_id, user_key, watch_id, session_id, channel, account_id, reservation_id,
+         kind, action, deadline, prompt, now, now),
+    )
+    return pid
+
+
+def has_open_protection(db: Database, watch_id: str, kind: str) -> bool:
+    row = db.query_one(
+        "SELECT id FROM library_protection_prompts"
+        " WHERE watch_id = ? AND kind = ? AND status = 'awaiting'",
+        (watch_id, kind),
+    )
+    return row is not None
+
+
+def awaiting_protection(db: Database, session_id: str) -> Optional[dict[str, Any]]:
+    """本会话里最近一条等待用户回复的保护提示。"""
+    row = db.query_one(
+        "SELECT * FROM library_protection_prompts"
+        " WHERE session_id = ? AND status = 'awaiting' ORDER BY created_at DESC LIMIT 1",
+        (session_id,),
+    )
+    return dict(row) if row else None
+
+
+def due_protection_prompts(db: Database, now: str) -> list[dict[str, Any]]:
+    """到达安全线仍未回复的保护提示（该执行保护动作了）。"""
+    rows = db.query(
+        "SELECT * FROM library_protection_prompts"
+        " WHERE status = 'awaiting' AND deadline <= ? ORDER BY deadline LIMIT 50",
+        (now,),
+    )
+    return [dict(r) for r in rows]
+
+
+def set_protection_status(db: Database, prompt_id: str, status: str) -> None:
+    db.execute(
+        "UPDATE library_protection_prompts SET status = ?, updated_at = ? WHERE id = ?",
+        (status, now_iso(), prompt_id),
     )

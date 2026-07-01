@@ -62,6 +62,33 @@ LIBRARY_SIGNIN_GRACE_MINUTES = int(os.environ.get("XQT_LIBRARY_DEFAULT_SIGNIN_GR
 LIBRARY_CHALLENGE_DIR = _path_env("XQT_LIBRARY_CHALLENGE_DIR", DATA_DIR / "challenges")
 # 调度器扫描间隔（秒）。
 LIBRARY_SCAN_INTERVAL_SECONDS = int(os.environ.get("XQT_LIBRARY_SCAN_INTERVAL_SECONDS", "30"))
+# 使用中座位「物理暂离」检测：走 get_door_log 判断是否离馆（预约状态不会实时变）。
+LIBRARY_DOOR_LOG_AWAY_DETECTION = os.environ.get(
+    "XQT_LIBRARY_DOOR_LOG_AWAY_DETECTION", "1") not in ("0", "false", "False", "")
+# 物理离馆后允许的暂离宽限分钟数（用于推算回座截止 / 排回座提醒）。
+LIBRARY_AWAY_GRACE_MINUTES = int(os.environ.get("XQT_LIBRARY_AWAY_GRACE_MINUTES", "60"))
+# 违约风控：每月违约达到该次数进黑名单一周；接近红线时提醒。
+LIBRARY_VIOLATION_MONTHLY_LIMIT = int(os.environ.get("XQT_LIBRARY_VIOLATION_MONTHLY_LIMIT", "3"))
+# 图书馆开放/闭馆时间（HH:MM）：自然语言预约缺省时段时用它推算默认起止时间。
+LIBRARY_OPEN_TIME = os.environ.get("XQT_LIBRARY_OPEN_TIME", "08:00")
+LIBRARY_CLOSE_TIME = os.environ.get("XQT_LIBRARY_CLOSE_TIME", "22:00")
+# 放票规则：每天 18:00 放次日的票；当天票随时可约。我们故意晚 2 分钟（18:02）再抢次日票，
+# 把开闸瞬间让给手动抢座的同学。定时预约 job 的执行时刻按此推算。
+LIBRARY_RELEASE_TIME = os.environ.get("XQT_LIBRARY_RELEASE_TIME", "18:02")
+# 提前几天放票（次日票 = 1）。用于把「目标日」换算成「该去抢的时刻」。
+LIBRARY_RELEASE_LEAD_DAYS = int(os.environ.get("XQT_LIBRARY_RELEASE_LEAD_DAYS", "1"))
+# 半天闭馆（一般休下午）时，只保留到这个时刻之前的上午时段。
+LIBRARY_HALF_DAY_CLOSE_TIME = os.environ.get("XQT_LIBRARY_HALF_DAY_CLOSE_TIME", "12:00")
+# 计划一次最多向后生成多少天的 job（配合调度器滚动补齐；防止超长计划一次铺太多行）。
+LIBRARY_PLAN_HORIZON_DAYS = int(os.environ.get("XQT_LIBRARY_PLAN_HORIZON_DAYS", "62"))
+# 爽约/暂离保护：默认开启。临近签到或暂离截止前先私信问用户「还去吗」，
+# 用户回复取消或到「安全线」前仍未回复，就自动提前取消/退座，避免留下违约记录。
+LIBRARY_PROTECTION_ENABLED = os.environ.get(
+    "XQT_LIBRARY_PROTECTION_ENABLED", "1") not in ("0", "false", "False", "")
+# 距离截止还剩多少分钟时开始询问用户。
+LIBRARY_PROTECT_ASK_LEAD_MINUTES = int(os.environ.get("XQT_LIBRARY_PROTECT_ASK_LEAD_MINUTES", "15"))
+# 距离截止还剩多少分钟仍未得到回复，就执行保护动作（留出取消/退座的操作余量）。
+LIBRARY_PROTECT_SAFETY_MINUTES = int(os.environ.get("XQT_LIBRARY_PROTECT_SAFETY_MINUTES", "3"))
 
 
 # ---- QQ 掉线邮件告警（health/qq_offline_alert）------------------------------
